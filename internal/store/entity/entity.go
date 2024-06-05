@@ -80,10 +80,10 @@ type Broadcast struct {
 	Phones        []string      `json:"phones"`
 	Completed     bool          `json:"completed"`
 	CreatedAt     time.Time     `json:"createdAt"`
-	CompletedAt   time.Time     `json:"completedAt"`
-	UpdatedAt     time.Time     `json:"updatedAt"`
+	CompletedAt   *time.Time    `json:"completedAt"`
+	UpdatedAt     *time.Time    `json:"updatedAt"`
 	CampaignName  string        `json:"campaignName" validate:"required"`
-	SentStartedAt time.Time     `json:"sentStartedAt"`
+	SentStartedAt *time.Time    `json:"sentStartedAt"`
 }
 
 type BroadcastRecipient struct {
@@ -97,6 +97,7 @@ type BroadcastRecipient struct {
 }
 
 type BroadcastToSend struct {
-	Broadcast Broadcast
-	Recipient *BroadcastRecipient
+	TotalRecipient int
+	Broadcast      Broadcast
+	Recipient      *BroadcastRecipient
 }

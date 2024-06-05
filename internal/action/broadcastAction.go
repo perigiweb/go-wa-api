@@ -1,6 +1,7 @@
 package action
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 
@@ -28,6 +29,8 @@ func (a *Action) ActionPostBroadcastMessage(c echo.Context) error {
 	if err = c.Validate(reqBody); err != nil {
 		return err
 	}
+
+	log.Printf("MEdia: %v", reqBody.Media)
 
 	uDevice := c.Get("device").(*entity.Device)
 

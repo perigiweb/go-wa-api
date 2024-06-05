@@ -134,7 +134,7 @@ func (s *Service) GetProfilePicture(userDeviceId string, jid string, existingId 
 		return nil, err
 	}
 
-	log.Printf("ParsedJID: %+v", parsedJID)
+	log.Printf("ParsedJID: %v", parsedJID)
 
 	waClient := getWAClient(userDeviceId)
 	if waClient == nil {
@@ -163,15 +163,6 @@ func (s *Service) GetProfileInfo(userDeviceId string, jid types.JID, existingId 
 		return make(map[types.JID]types.UserInfo), errors.New("whatsapp client for id: " + userDeviceId + " not found or not logged in")
 	}
 
-	/*
-		params := &whatsmeow.GetProfilePictureParams{
-			Preview:     true,
-			ExistingID:  existingId,
-			IsCommunity: false,
-		}
-
-		return waClient.GetProfilePictureInfo(jid, params)
-	*/
 	var jids []types.JID
 
 	jids = append(jids, jid)
@@ -186,6 +177,14 @@ func (s *Service) CheckPhone(deviceId string, phones []string) ([]types.IsOnWhat
 	}
 
 	return c.IsOnWhatsApp(phones)
+}
+
+func (s *Service) SendMessage(deviceId string, recipient string, message string, file entity.UploadedFile) (whatsmeow.SendResponse, error) {
+	if file.Data != "" {
+		return s.SendImageMessage(deviceId, recipient, message, file.Data)
+	}
+
+	return s.SendTextMessage(deviceId, recipient, message)
 }
 
 func (s *Service) SendTextMessage(deviceId string, recipient string, message string) (whatsmeow.SendResponse, error) {
@@ -258,6 +257,15 @@ func (s *Service) SendImageMessage(deviceId string, recipient string, caption st
 	}
 
 	return c.SendMessage(context.Background(), to, waMsg)
+}
+
+func (s *Service) SendBroadcastMessage(broadcastToSend entity.BroadcastToSend) (whatsmeow.SendResponse, error) {
+	return s.SendMessage(
+		broadcastToSend.Broadcast.DeviceId,
+		broadcastToSend.Recipient.Phone,
+		broadcastToSend.Broadcast.Message,
+		*broadcastToSend.Broadcast.Media,
+	)
 }
 
 func (s *Service) GetAllWhatsAppContacts(deviceId string) (contacts map[types.JID]types.ContactInfo, err error) {

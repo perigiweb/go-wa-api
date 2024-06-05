@@ -13,7 +13,7 @@ func (s *Service) CronJobs(c gocron.Scheduler) {
 	/*
 	 * Cron jobs to check contact phone is in WhatsApp or not
 	 */
-	c.NewJob(
+	checkPhoneJob, _ := c.NewJob(
 		gocron.DurationRandomJob(3*time.Minute, 9*time.Minute),
 		gocron.NewTask(func() {
 			log.Println("Cron run at: ", time.Now())
@@ -38,7 +38,7 @@ func (s *Service) CronJobs(c gocron.Scheduler) {
 
 							err = s.Repo.SaveUserContact(&contact)
 							if err != nil {
-								log.Printf("Error: %s", err.Error())
+								log.Printf("Error Save Contact (%d): %v", contact.Id, err)
 							}
 						} else {
 							_ = s.Repo.DeleteUserContactById(contact.Id, contact.UserId)
@@ -53,12 +53,16 @@ func (s *Service) CronJobs(c gocron.Scheduler) {
 		}),
 	)
 
+	n, err := checkPhoneJob.NextRun()
+	log.Printf("CheckPhone Next Run: %v; Error: %v", n, err)
+
 	/*
 	 * Cronjob for sending broadcast message
 	 */
-	c.NewJob(
-		gocron.DurationRandomJob(45*time.Minute, 55*time.Second),
+	smnj, _ := c.NewJob(
+		gocron.DurationRandomJob(15*time.Minute, 20*time.Minute),
 		gocron.NewTask(func() {
+			log.Println("Send Message Job...")
 			broadcastToSend, err := s.Repo.GetBroadcastToSend()
 			if err == nil {
 				log.Printf("Broadcast: %v", broadcastToSend)
@@ -71,8 +75,23 @@ func (s *Service) CronJobs(c gocron.Scheduler) {
 						/*
 						 * Send Message
 						 */
+						sendResponse, err := s.SendBroadcastMessage(broadcastToSend)
+						log.Printf("SendResponse: %v", sendResponse)
+						if err == nil {
+							err = s.Repo.UpdateSentStatus(broadcastToSend.Recipient.Id, "sent", sendResponse.ID, sendResponse.Timestamp)
+							log.Printf("Error UpdateSentStatus: %v", err)
+						} else {
+							log.Printf("Error SendBroadcastMessage: %s", err.Error())
+						}
+
+						if broadcastToSend.TotalRecipient == 1 {
+							err = s.Repo.UpdateCompletedBroadcast(broadcastToSend.Broadcast.Id, true, time.Now())
+							if err != nil {
+								log.Printf("UpdateCompletedBroadcast Error: %s", err.Error())
+							}
+						}
 					} else {
-						log.Printf("Error: %s", err.Error())
+						log.Printf("Error InsertBroadcastRecipient: %s", err.Error())
 					}
 				} else {
 					err = s.Repo.UpdateCompletedBroadcast(broadcastToSend.Broadcast.Id, true, time.Now())
@@ -85,6 +104,8 @@ func (s *Service) CronJobs(c gocron.Scheduler) {
 			}
 		}),
 	)
+	smnr, err := smnj.NextRun()
+	log.Printf("Send Msg Next Run: %v, Error: %v", smnr, err)
 
 	c.Start()
 }

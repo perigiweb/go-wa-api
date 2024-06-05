@@ -1,8 +1,6 @@
 package service
 
 import (
-	"encoding/json"
-	"fmt"
 	"log"
 
 	"go.mau.fi/whatsmeow"
@@ -35,7 +33,7 @@ func (e *WAEventHandler) register() {
 }
 
 func (e *WAEventHandler) handler(evt interface{}) {
-	log.Printf("WA Event Handler: %T: %+v\n\n", evt, evt)
+	log.Printf("WA Event Handler: %T\n\n", evt)
 
 	switch v := evt.(type) {
 	case *events.Connected, *events.PushNameSetting:
@@ -66,24 +64,22 @@ func (e *WAEventHandler) handler(evt interface{}) {
 		}
 
 	case *events.Message:
-		log.Printf("Receive New Message")
-		m, _ := json.Marshal(evt)
-		log.Println(string(m))
+		log.Printf("Receive New Message: %+v\n", v)
 
 	case *events.Receipt:
-		fmt.Println("Received a receipt!")
-		m, _ := json.Marshal(evt)
-		log.Println(string(m))
+		log.Printf("Received a receipt: %+v\n", v)
+		// May its a broadcast msg,
+		if v.Type == types.ReceiptTypeRead {
+			_ = e.repo.UpdateBroadcastMessageReceipt(v.MessageIDs, "read")
+		} else if v.Type == types.ReceiptTypeDelivered {
+			_ = e.repo.UpdateBroadcastMessageReceipt(v.MessageIDs, "delivered")
+		}
 
 	case *events.OfflineSyncCompleted:
-		fmt.Printf("OfflineSyncCompleted!: %+v\n", evt)
-		m, _ := json.Marshal(evt)
-		log.Println(string(m))
+		log.Printf("OfflineSyncCompleted!: %+v\n", v)
 
 	case *events.HistorySync:
-		fmt.Printf("HistorySync!: %+v\n", evt)
-		m, _ := json.Marshal(evt)
-		log.Println(string(m))
+		log.Printf("HistorySync!: %+v\n", v)
 
 	}
 }
