@@ -32,6 +32,37 @@ func (e *WAEventHandler) register() {
 	e.handlerId = e.client.AddEventHandler(e.handler)
 }
 
+func (e *WAEventHandler) saveMessage(evtMsg *events.Message) {
+	if evtMsg.Info.Chat.String() != "status@broadcast" {
+		waMsg := evtMsg.Message
+		if evtMsg.IsEdit {
+			editedKeyId := evtMsg.Message.GetProtocolMessage().GetKey().GetID()
+			e.repo.DeleteWAMessage(editedKeyId)
+			waMsg = evtMsg.Message.GetProtocolMessage().GetEditedMessage()
+		}
+
+		if waMsg != nil && !evtMsg.Info.Chat.IsBot() && !evtMsg.Info.Chat.IsEmpty() {
+			msg := &entity.WAMessage{
+				Message: waMsg,
+			}
+			m := entity.UserMessage{
+				ID:          evtMsg.Info.ID,
+				TheirJID:    &evtMsg.Info.Chat,
+				Message:     msg,
+				Timestamp:   evtMsg.Info.Timestamp,
+				DeviceId:    e.uDevice.Id,
+				FromMe:      evtMsg.Info.IsFromMe,
+				Type:        evtMsg.Info.Type,
+				PushName:    evtMsg.Info.PushName,
+				ReceiptType: "sent",
+			}
+
+			err := e.repo.InsertWAMessage(m)
+			log.Printf("SaveWAMessage Err: %+v", err)
+		}
+	}
+}
+
 func (e *WAEventHandler) handler(evt interface{}) {
 	log.Printf("WA Event Handler: %T\n\n", evt)
 
@@ -64,10 +95,13 @@ func (e *WAEventHandler) handler(evt interface{}) {
 		}
 
 	case *events.Message:
-		log.Printf("Receive New Message: %+v\n", v)
+		log.Printf("Received Message: %+v\n", v)
+		e.saveMessage(v)
 
 	case *events.Receipt:
 		log.Printf("Received a receipt: %+v\n", v)
+		err := e.repo.UpdateWAMessageReceiptType(v.MessageIDs, v.Type)
+		log.Println("UpdateMessageReceipt ", err)
 		// May its a broadcast msg,
 		if v.Type == types.ReceiptTypeRead {
 			_ = e.repo.UpdateBroadcastMessageReceipt(v.MessageIDs, "read")
@@ -80,6 +114,31 @@ func (e *WAEventHandler) handler(evt interface{}) {
 
 	case *events.HistorySync:
 		log.Printf("HistorySync!: %+v\n", v)
+		for _, c := range v.Data.GetConversations() {
+			for _, m := range c.GetMessages() {
+				theirJID, _ := types.ParseJID(c.GetID())
+				mEvt, err := e.client.ParseWebMessage(theirJID, m.GetMessage())
+				if err == nil {
+					log.Printf("HistoryChange Message: %+v\n", mEvt)
+					e.saveMessage(mEvt)
+				}
+			}
+		}
 
+	case *events.PushName:
+		log.Printf("PushName: %+v\n", v)
+
+	case *events.BusinessName:
+		log.Printf("BusinessName!: %+v\n", v)
+
+	case *events.Contact:
+		log.Printf("Contact!: %+v\n", v)
+
+	case *events.ChatPresence:
+		log.Printf("ChatPresence!: %+v\n", v)
+
+	case *events.LoggedOut:
+		log.Printf("LoggedOut!: %+v\n", v)
+		e.repo.DeleteDeviceById(e.uDevice.Id, e.uDevice.UserId)
 	}
 }

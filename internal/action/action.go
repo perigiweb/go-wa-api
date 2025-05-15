@@ -102,17 +102,25 @@ func (a *Action) Routes(e *echo.Echo) {
 	w.GET("/status", a.ActionPostWhatsAppQR)
 	w.POST("/check-phone", a.ActionPostCheckPhone)
 	w.POST("/send", a.ActionPostSendMessage)
+	w.POST("/send-chat-presence", a.ActionPostSendChatPresence)
 	w.POST("/broadcast", a.ActionPostBroadcastMessage)
+	w.PATCH("/broadcast/:broadcastId", a.ActionPatchToggleRun)
 	w.DELETE("/broadcast/:broadcastId", a.ActionDeleteBroadcast)
 	w.GET("/avatar", a.ActionGetProfilePicture)
 	w.GET("/contacts", a.ActionGetWhatsAppContacts)
 	w.GET("/broadcasts", a.ActionGetBroadcasts)
+	w.GET("/broadcast/:broadcastId/recipients", a.ActionGetBroadCastRecipients)
+	w.GET("/chats", a.ActionGetChats)
+	w.GET("/conversation", a.ActionGetConversation)
 
+	g.POST("/update-profile", a.actionPostUpdateAccount)
 	g.GET("/contacts", a.ActionGetUserContacts)
 	g.GET("/total-contacts", a.ActionGetTotalUserContacts)
 	g.POST("/contact", a.ActionPostUserContact)
+	g.POST("/contact/import", a.ActionPostImportContact)
 	g.GET("/contact/:contactId", a.ActionGetUserContact)
 	g.DELETE("/contact/:contactId", a.ActionDeleteUserContact)
+	g.GET("/contact/groups", a.ActionGetUserContactGroups)
 
 	refreshTokenSecret, _ := internal.GetEnvString("JWT_RT_SECRET")
 	refreshTokenConfig := echojwt.Config{
@@ -126,6 +134,7 @@ func (a *Action) Routes(e *echo.Echo) {
 	rt.Use(echojwt.WithConfig(refreshTokenConfig))
 	rt.GET("", a.ActionRefreshToken)
 
+	e.POST(a.baseUrl+"/sign-up", a.ActionPostSignUp)
 	e.POST(a.baseUrl+"/sign-in", a.ActionSignIn)
 	e.POST(a.baseUrl+"/sign-out", a.ActionSignOut)
 

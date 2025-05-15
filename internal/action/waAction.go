@@ -3,8 +3,10 @@ package action
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 
 	"github.com/perigiweb/go-wa-api/internal/store/entity"
@@ -58,6 +60,7 @@ func (a *Action) ActionPostSendMessage(c echo.Context) error {
 	var (
 		err             error
 		responsePayload ResponsePayload
+		sendResponse    whatsmeow.SendResponse
 	)
 
 	responsePayload.Status = false
@@ -66,7 +69,7 @@ func (a *Action) ActionPostSendMessage(c echo.Context) error {
 	if err = c.Bind(reqBody); err != nil {
 		responsePayload.Message = err.Error()
 
-		return c.JSON(http.StatusOK, responsePayload)
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
 	}
 
 	if err = c.Validate(reqBody); err != nil {
@@ -77,31 +80,54 @@ func (a *Action) ActionPostSendMessage(c echo.Context) error {
 
 	uDevice := c.Get("device").(*entity.Device)
 
-	if reqBody.MessageType == "media" {
-		resp, err := a.service.SendImageMessage(uDevice.Id, reqBody.Recipient, reqBody.Message, reqBody.UploadedFile.Data)
+	sendResponse, err = a.service.SendMessage(uDevice.Id, reqBody.Recipient, reqBody.Message, reqBody.UploadedFile)
 
-		if err != nil {
-			responsePayload.Message = err.Error()
-			return c.JSON(http.StatusOK, responsePayload)
-		}
-
-		responsePayload.Status = true
-		responsePayload.Data = resp
-
-		return c.JSON(http.StatusOK, responsePayload)
-	} else {
-		resp, err := a.service.SendTextMessage(uDevice.Id, reqBody.Recipient, reqBody.Message)
-
-		if err != nil {
-			responsePayload.Message = err.Error()
-			return c.JSON(http.StatusOK, responsePayload)
-		}
-
-		responsePayload.Status = true
-		responsePayload.Data = resp
-
-		return c.JSON(http.StatusOK, responsePayload)
+	if err != nil {
+		responsePayload.Message = err.Error()
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
 	}
+
+	responsePayload.Status = true
+	responsePayload.Data = sendResponse
+
+	return c.JSON(http.StatusOK, responsePayload)
+}
+
+type chatPresenceReqPayload struct {
+	Phone string                  `json:"phone" validate:"required"`
+	State types.ChatPresence      `json:"state" validate:"required"`
+	Media types.ChatPresenceMedia `json:"media"`
+}
+
+func (a *Action) ActionPostSendChatPresence(c echo.Context) error {
+	var (
+		err             error
+		responsePayload ResponsePayload
+	)
+
+	responsePayload.Status = false
+	reqBody := new(chatPresenceReqPayload)
+	if err = c.Bind(reqBody); err != nil {
+		responsePayload.Message = err.Error()
+
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
+	}
+
+	if err = c.Validate(reqBody); err != nil {
+		return err
+	}
+
+	uDevice := c.Get("device").(*entity.Device)
+	err = a.service.SendChatPresence(uDevice.Id, reqBody.Phone, reqBody.State, reqBody.Media)
+	if err != nil {
+		responsePayload.Message = err.Error()
+
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
+	}
+
+	responsePayload.Status = true
+
+	return c.JSON(http.StatusOK, responsePayload)
 }
 
 type waCheckPhoneReqPayload struct {
@@ -121,12 +147,11 @@ func (a *Action) ActionPostCheckPhone(c echo.Context) error {
 	if err = c.Bind(reqBody); err != nil {
 		responsePayload.Message = err.Error()
 
-		return c.JSON(http.StatusOK, responsePayload)
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
 	}
 
 	if err = c.Validate(reqBody); err != nil {
-		responsePayload.Message = err.Error()
-		return c.JSON(http.StatusOK, responsePayload)
+		return err
 	}
 
 	uDevice := c.Get("device").(*entity.Device)
@@ -134,7 +159,7 @@ func (a *Action) ActionPostCheckPhone(c echo.Context) error {
 	onWhatsApp, err = a.service.CheckPhone(uDevice.Id, reqBody.Phones)
 	if err != nil {
 		responsePayload.Message = err.Error()
-		return c.JSON(http.StatusOK, responsePayload)
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
 	}
 
 	responsePayload.Status = true
@@ -168,7 +193,7 @@ func (a *Action) ActionGetProfilePicture(c echo.Context) error {
 	if err != nil {
 		log.Printf("Error: %+v", err)
 		responsePayload.Message = err.Error()
-		return c.JSON(http.StatusOK, responsePayload)
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
 	}
 
 	responsePayload.Status = true
@@ -201,7 +226,7 @@ func (a *Action) ActionGetProfileInfo(c echo.Context) error {
 	profilePicture, err = a.service.GetProfileInfo(uDevice.Id, pjid, "")
 	if err != nil {
 		responsePayload.Message = err.Error()
-		return c.JSON(http.StatusOK, responsePayload)
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
 	}
 
 	responsePayload.Status = true
@@ -224,11 +249,104 @@ func (a *Action) ActionGetWhatsAppContacts(c echo.Context) error {
 	allContacts, err = a.service.GetAllWhatsAppContacts(uDevice.Id)
 	if err != nil {
 		responsePayload.Message = err.Error()
-		return c.JSON(http.StatusOK, responsePayload)
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
 	}
 
 	responsePayload.Status = true
 	responsePayload.Data = allContacts
+
+	return c.JSON(http.StatusOK, responsePayload)
+}
+
+type markAsReadReqPayload struct {
+	MessageIds []types.MessageID `json:"messageIds" validate:"required"`
+	Chat       types.JID         `json:"chat" validate:"required"`
+}
+
+func (a *Action) ActionPostMarkAsRead(c echo.Context) error {
+	var (
+		err             error
+		responsePayload ResponsePayload
+	)
+
+	responsePayload.Status = false
+	reqBody := new(markAsReadReqPayload)
+	if err = c.Bind(reqBody); err != nil {
+		responsePayload.Message = err.Error()
+
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
+	}
+
+	if err = c.Validate(reqBody); err != nil {
+		responsePayload.Message = err.Error()
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
+	}
+
+	uDevice := c.Get("device").(*entity.Device)
+	err = a.service.MarkAsRead(uDevice.Id, reqBody.Chat, reqBody.MessageIds)
+	if err != nil {
+		responsePayload.Message = err.Error()
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
+	}
+
+	responsePayload.Status = true
+
+	return c.JSON(http.StatusOK, responsePayload)
+}
+
+func (a *Action) ActionGetChats(c echo.Context) error {
+	var (
+		responsePayload ResponsePayload
+	)
+
+	responsePayload.Status = false
+	uDevice := c.Get("device").(*entity.Device)
+	chats, err := a.service.Repo.GetWAChats(uDevice.Id)
+	if err != nil {
+		responsePayload.Message = err.Error()
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
+	}
+
+	responsePayload.Status = true
+	responsePayload.Data = chats
+
+	return c.JSON(http.StatusOK, responsePayload)
+}
+
+type conversationParam struct {
+	ChatId types.JID `query:"c" validate:"required"`
+}
+
+func (a *Action) ActionGetConversation(c echo.Context) error {
+	var (
+		err             error
+		messages        []entity.UserMessage
+		responsePayload ResponsePayload
+	)
+
+	responsePayload.Status = false
+	reqQuery := new(conversationParam)
+	if err = c.Bind(reqQuery); err != nil {
+		responsePayload.Message = err.Error()
+
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
+	}
+
+	if err = c.Validate(reqQuery); err != nil {
+		responsePayload.Message = err.Error()
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
+	}
+
+	uDevice := c.Get("device").(*entity.Device)
+
+	messages, err = a.service.Repo.GetWaConversation(uDevice.Id, reqQuery.ChatId, time.Time{})
+	if err != nil {
+		responsePayload.Message = err.Error()
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
+	}
+
+	responsePayload.Status = true
+	responsePayload.Data = messages
 
 	return c.JSON(http.StatusOK, responsePayload)
 }

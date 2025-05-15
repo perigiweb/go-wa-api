@@ -9,6 +9,12 @@ import (
 )
 
 type (
+	signUpRequestPayload struct {
+		Name     string `json:"name" validate:"required"`
+		Email    string `json:"email" validate:"required,email"`
+		Password string `json:"password" validate:"required"`
+	}
+
 	signInRequestPayload struct {
 		UserEmail    string `json:"userEmail" validate:"required,email"`
 		UserPassword string `json:"userPassword" validate:"required"`
@@ -24,6 +30,28 @@ type (
 	}
 )
 
+func (a *Action) ActionPostSignUp(c echo.Context) error {
+	var (
+		err             error
+		responsePayload ResponsePayload
+	)
+	responsePayload.Status = false
+
+	u := new(signUpRequestPayload)
+	if err = c.Bind(u); err != nil {
+		responsePayload.Message = err.Error()
+
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
+	}
+
+	if err = c.Validate(u); err != nil {
+		return err
+	}
+
+	responsePayload.Message = "Sorry, Sign Up not open yet :-)"
+	return c.JSON(http.StatusOK, responsePayload)
+}
+
 func (a *Action) ActionSignIn(c echo.Context) error {
 	var (
 		err             error
@@ -35,12 +63,11 @@ func (a *Action) ActionSignIn(c echo.Context) error {
 	if err = c.Bind(u); err != nil {
 		responsePayload.Message = err.Error()
 
-		return c.JSON(http.StatusOK, responsePayload)
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
 	}
 
 	if err = c.Validate(u); err != nil {
-		responsePayload.Message = err.Error()
-		return c.JSON(http.StatusOK, responsePayload)
+		return err
 	}
 
 	status, message, jwtToken, jwtRefreshToken := a.service.SignIn(u.UserEmail, u.UserPassword, c.Request().UserAgent(), c.Request().RemoteAddr)
@@ -87,14 +114,14 @@ func (a *Action) ActionSignOut(c echo.Context) error {
 	p := new(signOutRequestPayload)
 	if err = c.Bind(p); err != nil {
 		responsePayload.Message = err.Error()
-		return c.JSON(http.StatusOK, responsePayload)
+		return c.JSON(http.StatusUnprocessableEntity, responsePayload)
 	}
 
 	if p.SessionId != "" {
 		err = a.service.SignOut(p.SessionId)
 		if err != nil {
 			responsePayload.Message = err.Error()
-			return c.JSON(http.StatusOK, responsePayload)
+			return c.JSON(http.StatusUnprocessableEntity, responsePayload)
 		}
 	}
 

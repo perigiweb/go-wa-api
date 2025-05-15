@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"go.mau.fi/util/dbutil"
 	"go.mau.fi/whatsmeow/types"
 
 	"github.com/perigiweb/go-wa-api/internal/store/entity"
@@ -19,19 +20,15 @@ const (
 )
 
 const (
-	getBroadcastsQuery = `
-		SELECT * FROM ` + broadcastTable + ` WHERE user_id=$1 AND device_id=$2 ORDER BY id DESC LIMIT $3 OFFSET $4
-	`
-	getCountBroadcastQuery = "SELECT COUNT(*) FROM " + broadcastTable + " WHERE user_id=$1 AND device_id=$2"
-	insertBroadcastQuery   = `
-		INSERT INTO ` + broadcastTable + ` (
-			user_id, device_id, message, media, contact_type, contact_filter, filter_value, phones, campaign_name, sent_started_at
+	getBroadcastsQuery     = `SELECT * FROM ` + broadcastTable + ` WHERE user_id=$1 AND jid=$2 ORDER BY id DESC LIMIT $3 OFFSET $4`
+	getCountBroadcastQuery = "SELECT COUNT(*) FROM " + broadcastTable + " WHERE user_id=$1 AND jid=$2"
+	getBroadcastByIdQuery  = "SELECT * FROM " + broadcastTable + " WHERE id=$1"
+	insertBroadcastQuery   = `INSERT INTO ` + broadcastTable + ` (
+			user_id, jid, message, media, contact_type, contact_filter, filter_value, phones, campaign_name, sent_started_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-		) RETURNING id
-	`
-	updateBroadcastQuery = `
-		UPDATE ` + broadcastTable + ` SET
+		) RETURNING id`
+	updateBroadcastQuery = `UPDATE ` + broadcastTable + ` SET
 			message=$1,
 			media=$2,
 			contact_type=$3,
@@ -41,22 +38,18 @@ const (
 			campaign_name=$7,
 			updated_at=$8,
 			sent_started_at=$9
-		WHERE id=$10
-	`
-	updateCompletedBroadcastQuery = `
-		UPDATE ` + broadcastTable + ` SET completed=$1, completed_at=$2, updated_at=$3 WHERE id=$4
-	`
-	deleteBroadcastQuery         = `DELETE FROM ` + broadcastTable + ` WHERE id=$1`
-	insertBrodcastRecipientQuery = `
-		INSERT INTO ` + broadcastRecipientTable + ` (
+		WHERE id=$10`
+	updateCompletedBroadcastQuery   = `UPDATE ` + broadcastTable + ` SET completed=$1, completed_at=$2, updated_at=$3 WHERE id=$4`
+	deleteBroadcastQuery            = `DELETE FROM ` + broadcastTable + ` WHERE id=$1`
+	getBroadcastRecipientsQuery     = "SELECT * FROM " + broadcastRecipientTable + " WHERE broadcast_id=$1 ORDER BY id DESC LIMIT $2 OFFSET $3"
+	getBroadcastRecipientCountQuery = "SELECT COUNT(*) FROM " + broadcastRecipientTable + " WHERE broadcast_id=$1"
+	insertBrodcastRecipientQuery    = `INSERT INTO ` + broadcastRecipientTable + ` (
 			broadcast_id, name, phone
-		) VALUES ($1, $2, $3) RETURNING id
-	`
-	updateSentStatusQuery = `
-		UPDATE ` + broadcastRecipientTable + ` SET sent_status=$1, sent_at=$2, message_id=$3 WHERE id=$4
-	`
+		) VALUES ($1, $2, $3) RETURNING id`
+	updateSentStatusQuery = `UPDATE ` + broadcastRecipientTable + ` SET sent_status=$1, sent_at=$2, message_id=$3
+	  WHERE id=$4`
 	updateRecieptQuery       = `UPDATE ` + broadcastRecipientTable + ` SET sent_status=$1 WHERE message_id IN`
-	getRandomBroadcastToSent = `SELECT * FROM ` + broadcastTable + ` WHERE sent_started_at <= now() AND completed=false`
+	getRandomBroadcastToSent = `SELECT * FROM ` + broadcastTable + ` WHERE sent_started_at <= now() AND completed=false ORDER BY RANDOM() LIMIT 1`
 )
 
 func convertJsonbToString(v []uint8) (d []string) {
@@ -65,11 +58,80 @@ func convertJsonbToString(v []uint8) (d []string) {
 	return d
 }
 
-func (r *Repo) GetBroadcasts(userId int, deviceId string, limit int, offset int) ([]entity.Broadcast, int, error) {
-	broadcasts := make([]entity.Broadcast, 0)
+func (r *Repo) ScanBroadcast(row dbutil.Scannable) (*entity.Broadcast, error) {
+	var (
+		id                                               int64
+		broadcastUserId                                  int
+		message, contactType, contactFilter, filterValue sql.NullString
+		createdAt, completedAt, updatedAt, sentStartedAt sql.NullTime
+		completed                                        bool
+		campaignName                                     string
+		phones                                           []uint8
+		media                                            entity.UploadedFile
+		broadcastJid                                     types.JID
+	)
+
+	err := row.Scan(
+		&id,
+		&broadcastUserId,
+		&message,
+		&media,
+		&contactType,
+		&contactFilter,
+		&filterValue,
+		&phones,
+		&broadcastJid,
+		&completed,
+		&createdAt,
+		&completedAt,
+		&updatedAt,
+		&campaignName,
+		&sentStartedAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	broadcast := entity.Broadcast{
+		Id:            id,
+		UserId:        broadcastUserId,
+		Message:       message.String,
+		Media:         &media,
+		ContactType:   contactType.String,
+		ContactFilter: contactFilter.String,
+		FilterValue:   filterValue.String,
+		Phones:        convertJsonbToString(phones),
+		Jid:           broadcastJid,
+		Completed:     completed,
+		CreatedAt:     createdAt.Time,
+		CampaignName:  campaignName,
+		SentStartedAt: &sentStartedAt.Time,
+	}
+
+	if completedAt.Valid {
+		broadcast.CompletedAt = &completedAt.Time
+	}
+	if updatedAt.Valid {
+		broadcast.UpdatedAt = &updatedAt.Time
+	}
+
+	broadcast.Status = "pending"
+	if broadcast.Completed && !completedAt.Valid {
+		broadcast.Status = "pause"
+	}
+	if broadcast.Completed && completedAt.Valid {
+		broadcast.Status = "complete"
+	}
+
+	return &broadcast, nil
+}
+
+func (r *Repo) GetBroadcasts(userId int, jid types.JID, limit int, offset int) ([]*entity.Broadcast, int, error) {
+	broadcasts := make([]*entity.Broadcast, 0)
 	totalBroadcast := 0
 
-	err := r.db.QueryRow(getCountBroadcastQuery, userId, deviceId).Scan(&totalBroadcast)
+	err := r.db.QueryRow(getCountBroadcastQuery, userId, jid).Scan(&totalBroadcast)
 	if err != nil {
 		return broadcasts, totalBroadcast, err
 	}
@@ -78,66 +140,34 @@ func (r *Repo) GetBroadcasts(userId int, deviceId string, limit int, offset int)
 		return broadcasts, totalBroadcast, nil
 	}
 
-	rows, err := r.db.Query(getBroadcastsQuery, userId, deviceId, limit, offset)
+	rows, err := r.db.Query(getBroadcastsQuery, userId, jid, limit, offset)
 	if err != nil {
 		return broadcasts, totalBroadcast, err
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var (
-			id                                                             int64
-			user_id                                                        int
-			message, contact_type, contact_filter, filter_value, device_id sql.NullString
-			created_at, completed_at, updated_at, sent_started_at          sql.NullTime
-			completed                                                      bool
-			campaign_name                                                  string
-			phones                                                         []uint8
-			media                                                          entity.UploadedFile
-		)
-
-		if err := rows.Scan(
-			&id,
-			&user_id,
-			&message,
-			&media,
-			&contact_type,
-			&contact_filter,
-			&filter_value,
-			&phones,
-			&device_id,
-			&completed,
-			&created_at,
-			&completed_at,
-			&updated_at,
-			&campaign_name,
-			&sent_started_at,
-		); err == nil {
-			broadcast := entity.Broadcast{
-				Id:            id,
-				UserId:        user_id,
-				Message:       message.String,
-				Media:         &media,
-				ContactType:   contact_type.String,
-				ContactFilter: contact_filter.String,
-				FilterValue:   filter_value.String,
-				Phones:        convertJsonbToString(phones),
-				DeviceId:      device_id.String,
-				Completed:     completed,
-				CreatedAt:     created_at.Time,
-				CompletedAt:   &completed_at.Time,
-				UpdatedAt:     &updated_at.Time,
-				CampaignName:  campaign_name,
-				SentStartedAt: &sent_started_at.Time,
-			}
-
+		broadcast, scanErr := r.ScanBroadcast(rows)
+		if scanErr == nil {
 			broadcasts = append(broadcasts, broadcast)
-		} else {
-			log.Printf("Rows Error: %v", err)
 		}
 	}
 
 	return broadcasts, totalBroadcast, nil
+}
+
+func (r *Repo) GetBroadcast(broadcastId int64) (*entity.Broadcast, error) {
+
+	broadcast, err := r.ScanBroadcast(r.db.QueryRow(getBroadcastByIdQuery, broadcastId))
+	if err != nil {
+		return broadcast, err
+	}
+
+	device, _ := r.GetDeviceByJid(broadcast.Jid)
+
+	broadcast.Device = device
+
+	return broadcast, err
 }
 
 func (r *Repo) SaveBroadcast(broadcast *entity.Broadcast) error {
@@ -161,7 +191,7 @@ func (r *Repo) SaveBroadcast(broadcast *entity.Broadcast) error {
 		err = r.db.QueryRow(
 			insertBroadcastQuery,
 			broadcast.UserId,
-			broadcast.DeviceId,
+			broadcast.Jid,
 			broadcast.Message,
 			broadcast.Media,
 			broadcast.ContactType,
@@ -176,10 +206,79 @@ func (r *Repo) SaveBroadcast(broadcast *entity.Broadcast) error {
 	return err
 }
 
+func (r *Repo) UpdateRunningStatusBroadcast(broadcastId int64, status string) error {
+	var completed bool
+	if status == "pause" {
+		completed = true
+	} else {
+		completed = false
+	}
+	log.Printf("Status: %s, Completed: %v, BroadcastId: %d", status, completed, broadcastId)
+	_, err := r.db.Exec("UPDATE "+broadcastTable+" SET completed=$1 WHERE id=$2", completed, broadcastId)
+
+	return err
+}
+
 func (r *Repo) UpdateCompletedBroadcast(broadcastId int64, completed bool, completedAt time.Time) error {
 	_, err := r.db.Exec(updateCompletedBroadcastQuery, completed, completedAt, time.Now(), broadcastId)
 
 	return err
+}
+
+func (r *Repo) GetBroadcastRecipients(broadcastId int64, limit int, offset int) ([]entity.BroadcastRecipient, int, error) {
+	recipients := make([]entity.BroadcastRecipient, 0)
+	total := 0
+
+	err := r.db.QueryRow(getBroadcastRecipientCountQuery, broadcastId).Scan(&total)
+	if err != nil {
+		return recipients, total, err
+	}
+
+	rows, err := r.db.Query(getBroadcastRecipientsQuery, broadcastId, limit, offset)
+	if err != nil {
+		return recipients, total, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			id                    int
+			rBroadcastId          int64
+			phone, name           string
+			sentStatus, messageId sql.NullString
+			sentAt                sql.NullTime
+		)
+
+		if err := rows.Scan(
+			&id,
+			&rBroadcastId,
+			&phone,
+			&name,
+			&sentStatus,
+			&sentAt,
+			&messageId,
+		); err == nil {
+			recipient := entity.BroadcastRecipient{
+				Id:          id,
+				BroadcastId: rBroadcastId,
+				Phone:       phone,
+				Name:        name,
+				SentStatus:  sentStatus.String,
+			}
+			if sentAt.Valid {
+				recipient.SentAt = &sentAt.Time
+			}
+			if messageId.Valid {
+				recipient.MessageId = &messageId.String
+			}
+
+			recipients = append(recipients, recipient)
+		} else {
+			log.Printf("Rows Error: %v", err)
+		}
+	}
+
+	return recipients, total, err
 }
 
 func (r *Repo) InsertBroadcastRecipient(br *entity.BroadcastRecipient) error {
@@ -215,7 +314,7 @@ func (r *Repo) UpdateBroadcastMessageReceipt(messageId []string, receipt string)
 	}
 
 	q := updateRecieptQuery + ` (` + strings.Join(ins, ",") + `)`
-	log.Printf("args: %v, Receipt: %s >> Query: %s", args, receipt, q)
+	log.Printf("MessageID: %v, Receipt: %s >> Query: %s", messageId, receipt, q)
 
 	affRows, err := r.db.Exec(
 		q,
@@ -227,218 +326,195 @@ func (r *Repo) UpdateBroadcastMessageReceipt(messageId []string, receipt string)
 	return err
 }
 
-func (r *Repo) GetBroadcastToSend() (broadcastToSend entity.BroadcastToSend, err error) {
+func (r *Repo) GetBroadcastToSend() (*entity.BroadcastToSend, error) {
 	var (
-		id                                                             int64
-		user_id                                                        int
-		message, contact_type, contact_filter, filter_value, device_id sql.NullString
-		created_at, completed_at, updated_at, sent_started_at          sql.NullTime
-		completed                                                      bool
-		campaign_name                                                  string
-		phones                                                         []uint8
-		media                                                          entity.UploadedFile
-		totalContact                                                   int
+		totalContact    int
+		device          *entity.Device
+		broadcastToSend entity.BroadcastToSend
 	)
 
-	err = r.db.QueryRow(getRandomBroadcastToSent).Scan(
-		&id,
-		&user_id,
-		&message,
-		&media,
-		&contact_type,
-		&contact_filter,
-		&filter_value,
-		&phones,
-		&device_id,
-		&completed,
-		&created_at,
-		&completed_at,
-		&updated_at,
-		&campaign_name,
-		&sent_started_at,
-	)
-	if err == nil {
-		broadcastToSend.Broadcast = entity.Broadcast{
-			Id:            id,
-			UserId:        user_id,
-			Message:       message.String,
-			Media:         &media,
-			ContactType:   contact_type.String,
-			ContactFilter: contact_filter.String,
-			FilterValue:   filter_value.String,
-			Phones:        convertJsonbToString(phones),
-			DeviceId:      device_id.String,
-			Completed:     completed,
-			CreatedAt:     created_at.Time,
-			CompletedAt:   &completed_at.Time,
-			UpdatedAt:     &updated_at.Time,
-			CampaignName:  campaign_name,
-			SentStartedAt: &sent_started_at.Time,
+	broadcast, err := r.ScanBroadcast(r.db.QueryRow(getRandomBroadcastToSent))
+	if err != nil {
+		return nil, err
+	}
+
+	device, _ = r.GetDeviceByJid(broadcast.Jid)
+
+	broadcast.Device = device
+
+	broadcastToSend.Broadcast = *broadcast
+
+	switch broadcast.ContactType {
+	case "c":
+		filterValue := broadcast.FilterValue
+		filterField := contactFilterField(broadcast.ContactFilter)
+		if filterField == "group" {
+			cg := strings.Split(filterValue, ":")
+			filterValue = cg[0]
+			filterField = "id IN (SELECT contact_id FROM " + userContactGroupContactTableName + " WHERE group_id=$2)"
+		} else {
+			filterValue = broadcast.FilterValue + "%"
+			if filterField == "" {
+				filterField = "1=$2"
+				filterValue = "1"
+			} else {
+				filterField = filterField + " ILIKE $2"
+			}
+		}
+		countContactQuery := `SELECT count(*) FROM ` + userContactTableName + `
+		WHERE in_wa=1 AND user_id=$1 AND ` + filterField + ` AND NOT EXISTS (
+			SELECT 1 FROM "user_broadcast_recipients" WHERE broadcast_id=$3 AND phone=user_contacts.phone
+		)`
+		err = r.db.QueryRow(
+			countContactQuery,
+			broadcast.UserId,
+			filterValue,
+			broadcast.Id,
+		).Scan(&totalContact)
+		if err != nil {
+			return &broadcastToSend, err
 		}
 
-		switch broadcastToSend.Broadcast.ContactType {
-		case "c":
-			filterField := contactFilterField(broadcastToSend.Broadcast.ContactFilter)
-			filterValue := broadcastToSend.Broadcast.FilterValue + "%"
-			if filterField == "" {
-				filterField = "1"
-				filterValue = "1"
-			}
-			countContactQuery := `SELECT count(*) FROM ` + userContactTableName + `
-			WHERE in_wa=1 AND user_id=$1 AND ` + filterField + ` ILIKE $2 AND NOT EXISTS (
-				SELECT 1 FROM "user_broadcast_recipients" WHERE broadcast_id=$3 AND phone=user_contacts.phone
-			)`
-			err = r.db.QueryRow(
-				countContactQuery,
-				broadcastToSend.Broadcast.UserId,
-				filterValue,
-				broadcastToSend.Broadcast.Id,
-			).Scan(&totalContact)
-			if err != nil {
-				return broadcastToSend, err
-			}
+		broadcastToSend.TotalRecipient = totalContact
+		if totalContact == 0 {
+			return &broadcastToSend, nil
+		}
 
-			broadcastToSend.TotalRecipient = totalContact
-			if totalContact == 0 {
-				return broadcastToSend, nil
-			}
+		contactQuery := `SELECT name,phone,verified_name FROM ` + userContactTableName + `
+		WHERE in_wa=1 AND user_id=$1 AND ` + filterField + ` AND NOT EXISTS (
+			SELECT 1 FROM "user_broadcast_recipients" WHERE broadcast_id=$3 AND phone=user_contacts.phone
+		) ORDER BY RANDOM() LIMIT 1`
+		//log.Printf("BroadcastId: %d, field: %s, value: %s, Query: %s", broadcastToSend.Broadcast.Id, filterField, filterValue, contactQuery)
+		var contactName, contactPhone, contactVerifiedName sql.NullString
 
-			contactQuery := `SELECT name,phone,verified_name FROM ` + userContactTableName + `
-			WHERE in_wa=1 AND user_id=$1 AND ` + filterField + ` ILIKE $2 AND NOT EXISTS (
-				SELECT 1 FROM "user_broadcast_recipients" WHERE broadcast_id=$3 AND phone=user_contacts.phone
-			) ORDER BY RANDOM() LIMIT 1`
-			//log.Printf("BroadcastId: %d, field: %s, value: %s, Query: %s", broadcastToSend.Broadcast.Id, filterField, filterValue, contactQuery)
-			var name, phone, verified_name sql.NullString
+		err = r.db.QueryRow(
+			contactQuery,
+			broadcastToSend.Broadcast.UserId,
+			filterValue,
+			broadcastToSend.Broadcast.Id,
+		).Scan(&contactName, &contactPhone, &contactVerifiedName)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return &broadcastToSend, nil
+			}
+			return &broadcastToSend, err
+		}
 
-			err = r.db.QueryRow(
-				contactQuery,
-				broadcastToSend.Broadcast.UserId,
-				filterValue,
-				broadcastToSend.Broadcast.Id,
-			).Scan(&name, &phone, &verified_name)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					return broadcastToSend, nil
-				}
-				return broadcastToSend, err
-			}
+		broadcastToSend.Recipient = &entity.BroadcastRecipient{
+			BroadcastId: broadcastToSend.Broadcast.Id,
+			Phone:       contactPhone.String,
+		}
+		if contactVerifiedName.Valid {
+			broadcastToSend.Recipient.Name = contactVerifiedName.String
+		} else {
+			broadcastToSend.Recipient.Name = contactName.String
+		}
+	case "w":
+		device := &entity.Device{
+			Jid:    &broadcastToSend.Broadcast.Jid,
+			UserId: broadcastToSend.Broadcast.UserId,
+		}
 
-			broadcastToSend.Recipient = &entity.BroadcastRecipient{
-				BroadcastId: broadcastToSend.Broadcast.Id,
-				Phone:       phone.String,
-			}
-			if verified_name.Valid {
-				broadcastToSend.Recipient.Name = verified_name.String
-			} else {
-				broadcastToSend.Recipient.Name = name.String
-			}
-		case "w":
-			device := &entity.Device{
-				Id:     broadcastToSend.Broadcast.DeviceId,
-				UserId: broadcastToSend.Broadcast.UserId,
-			}
+		device, err = r.GetDeviceByIdAndUserId(device)
+		if err != nil {
+			return &broadcastToSend, err
+		}
 
-			device, err = r.GetDeviceByIdAndUserId(device)
-			if err != nil {
-				return broadcastToSend, err
-			}
+		countContactQuery := `SELECT COUNT(*) FROM whatsmeow_contacts WHERE our_jid=$1 AND NOT EXISTS (
+			SELECT 1 FROM "user_broadcast_recipients" WHERE broadcast_id=$2 AND phone=whatsmeow_contacts.their_jid
+		)`
+		err = r.db.QueryRow(
+			countContactQuery,
+			device.Jid,
+			broadcastToSend.Broadcast.Id,
+		).Scan(&totalContact)
+		if err != nil {
+			return &broadcastToSend, err
+		}
+		broadcastToSend.TotalRecipient = totalContact
+		if totalContact == 0 {
+			return &broadcastToSend, nil
+		}
 
-			countContactQuery := `SELECT COUNT(*) FROM whatsmeow_contacts WHERE our_jid=$1 AND NOT EXISTS (
-				SELECT 1 FROM "user_broadcast_recipients" WHERE broadcast_id=$2 AND phone=whatsmeow_contacts.their_jid
-			)`
-			err = r.db.QueryRow(
-				countContactQuery,
-				device.Jid,
-				broadcastToSend.Broadcast.Id,
-			).Scan(&totalContact)
-			if err != nil {
-				return broadcastToSend, err
-			}
-			broadcastToSend.TotalRecipient = totalContact
-			if totalContact == 0 {
-				return broadcastToSend, nil
-			}
+		contactQuery := `SELECT full_name, their_jid FROM whatsmeow_contacts WHERE our_jid=$1 AND NOT EXISTS (
+			SELECT 1 FROM "user_broadcast_recipients" WHERE broadcast_id=$2 AND phone=whatsmeow_contacts.their_jid
+		)`
 
-			contactQuery := `SELECT full_name, their_jid FROM whatsmeow_contacts WHERE our_jid=$1 AND NOT EXISTS (
-				SELECT 1 FROM "user_broadcast_recipients" WHERE broadcast_id=$2 AND phone=whatsmeow_contacts.their_jid
-			)`
+		var name, phone sql.NullString
 
-			var name, phone sql.NullString
-
-			err = r.db.QueryRow(
-				contactQuery,
-				device.Jid,
-				broadcastToSend.Broadcast.Id,
-			).Scan(&name, &phone)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					return broadcastToSend, nil
-				}
-				return broadcastToSend, err
+		err = r.db.QueryRow(
+			contactQuery,
+			device.Jid,
+			broadcastToSend.Broadcast.Id,
+		).Scan(&name, &phone)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return &broadcastToSend, nil
 			}
+			return &broadcastToSend, err
+		}
 
-			broadcastToSend.Recipient = &entity.BroadcastRecipient{
-				BroadcastId: broadcastToSend.Broadcast.Id,
-				Phone:       phone.String,
-				Name:        name.String,
-			}
-		case "p":
-			phones := make([]string, 0)
-			for _, p := range broadcastToSend.Broadcast.Phones {
-				phones = append(phones, `('', '`+p+`')`)
-			}
-			values := strings.Join(phones, ",")
+		broadcastToSend.Recipient = &entity.BroadcastRecipient{
+			BroadcastId: broadcastToSend.Broadcast.Id,
+			Phone:       phone.String,
+			Name:        name.String,
+		}
+	case "p":
+		phones := make([]string, 0)
+		for _, p := range broadcastToSend.Broadcast.Phones {
+			phones = append(phones, `('', '`+p+`')`)
+		}
+		values := strings.Join(phones, ",")
 
-			countContactQuery := `WITH phones (name,phone) AS (VALUES ` + values + `)
-			SELECT COUNT(*) FROM phones WHERE NOT EXISTS (
-				SELECT 1 FROM "user_broadcast_recipients" WHERE broadcast_id=$1 AND phone=phones.phone
-			)`
-			err = r.db.QueryRow(
-				countContactQuery,
-				broadcastToSend.Broadcast.Id,
-			).Scan(&totalContact)
-			if err != nil {
-				return broadcastToSend, err
-			}
-			broadcastToSend.TotalRecipient = totalContact
-			if totalContact == 0 {
-				return broadcastToSend, nil
-			}
+		countContactQuery := `WITH phones (name,phone) AS (VALUES ` + values + `)
+		SELECT COUNT(*) FROM phones WHERE NOT EXISTS (
+			SELECT 1 FROM "user_broadcast_recipients" WHERE broadcast_id=$1 AND phone=phones.phone
+		)`
+		err = r.db.QueryRow(
+			countContactQuery,
+			broadcastToSend.Broadcast.Id,
+		).Scan(&totalContact)
+		if err != nil {
+			return &broadcastToSend, err
+		}
+		broadcastToSend.TotalRecipient = totalContact
+		if totalContact == 0 {
+			return &broadcastToSend, nil
+		}
 
-			contactQuery := `WITH phones (name,phone) AS (VALUES ` + values + `)
-			SELECT name,phone FROM phones WHERE NOT EXISTS (
-				SELECT 1 FROM "user_broadcast_recipients" WHERE broadcast_id=$1 AND phone=phones.phone
-			)`
+		contactQuery := `WITH phones (name,phone) AS (VALUES ` + values + `)
+		SELECT name,phone FROM phones WHERE NOT EXISTS (
+			SELECT 1 FROM "user_broadcast_recipients" WHERE broadcast_id=$1 AND phone=phones.phone
+		)`
 
-			var name, phone sql.NullString
+		var name, phone sql.NullString
 
-			err = r.db.QueryRow(
-				contactQuery,
-				broadcastToSend.Broadcast.Id,
-			).Scan(&name, &phone)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					return broadcastToSend, nil
-				}
-				return broadcastToSend, err
+		err = r.db.QueryRow(
+			contactQuery,
+			broadcastToSend.Broadcast.Id,
+		).Scan(&name, &phone)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return &broadcastToSend, nil
 			}
+			return &broadcastToSend, err
+		}
 
-			broadcastToSend.Recipient = &entity.BroadcastRecipient{
-				BroadcastId: broadcastToSend.Broadcast.Id,
-				Phone:       phone.String,
-				Name:        name.String,
-			}
+		broadcastToSend.Recipient = &entity.BroadcastRecipient{
+			BroadcastId: broadcastToSend.Broadcast.Id,
+			Phone:       phone.String,
+			Name:        name.String,
 		}
 	}
 
-	return broadcastToSend, err
+	return &broadcastToSend, nil
 }
 
-func (r *Repo) DeleteBroadcast(broadcastId int, deviceId string) error {
+func (r *Repo) DeleteBroadcast(broadcastId int, jid *types.JID) error {
 	var err error
 
-	if deviceId != "" {
-		_, err = r.db.Exec(deleteBroadcastQuery+" AND device_id=$2", broadcastId, deviceId)
+	if jid != nil {
+		_, err = r.db.Exec(deleteBroadcastQuery+" AND jid=$2", broadcastId, jid.ToNonAD())
 	} else {
 		_, err = r.db.Exec(deleteBroadcastQuery, broadcastId)
 	}

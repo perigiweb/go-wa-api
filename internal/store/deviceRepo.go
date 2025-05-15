@@ -63,6 +63,22 @@ func (r *Repo) GetDeviceByIdAndUserId(device *entity.Device) (*entity.Device, er
 	return device, err
 }
 
+func (r *Repo) GetDeviceByJid(jid meowTypes.JID) (*entity.Device, error) {
+	var device entity.Device
+
+	//jid.User
+
+	err := r.db.QueryRow("SELECT id,user_id,name,jid,connected FROM "+userDeviceTableName+" WHERE jid LIKE $1", jid.User+"%").Scan(
+		&device.Id,
+		&device.UserId,
+		&device.Name,
+		&device.Jid,
+		&device.Connected,
+	)
+
+	return &device, err
+}
+
 func (r *Repo) InsertNewDevice(userId int, deviceName string) (entity.Device, error) {
 	var (
 		err    error

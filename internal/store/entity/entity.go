@@ -7,6 +7,7 @@ import (
 
 	"database/sql/driver"
 
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -35,11 +36,35 @@ func (f *UploadedFile) Scan(v any) error {
 	return json.Unmarshal(b, &f)
 }
 
+type WAMessage struct {
+	*waE2E.Message
+}
+
+func (wm *WAMessage) Value() (driver.Value, error) {
+	return json.Marshal(wm)
+}
+
+func (wm *WAMessage) Scan(v any) error {
+	if v == nil {
+		return nil
+	}
+
+	b, ok := v.([]byte)
+	if !ok {
+		return errors.New("type assertion to []byte failed")
+	}
+
+	return json.Unmarshal(b, &wm)
+}
+
 type User struct {
-	Id       int    `json:"id"`
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	Password string `db:"password"`
+	Id          int       `json:"id"`
+	Email       string    `json:"email"`
+	Name        string    `json:"name"`
+	Password    string    `db:"password"`
+	Status      bool      `json:"status"`
+	RegistereAt time.Time `json:"registeredAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 type UserSession struct {
@@ -52,12 +77,19 @@ type UserSession struct {
 }
 
 type UserContact struct {
-	Id           int    `json:"id"`
-	UserId       int    `json:"userId"`
-	Name         string `json:"name" validate:"required"`
-	Phone        string `json:"phone" validate:"required"`
-	InWA         int    `json:"inWA"`
-	VerifiedName string `json:"verifiedName"`
+	Id           int      `json:"id"`
+	UserId       int      `json:"userId"`
+	Name         string   `json:"name" validate:"required"`
+	Phone        string   `json:"phone" validate:"required"`
+	InWA         int      `json:"inWA"`
+	VerifiedName string   `json:"verifiedName"`
+	Groups       []string `json:"groups"`
+}
+
+type UserContactGroup struct {
+	Id     int    `json:"id"`
+	UserId int    `json:"userId"`
+	Name   string `json:"name" validate:"required"`
 }
 
 type Device struct {
@@ -68,10 +100,22 @@ type Device struct {
 	Connected bool       `json:"connected"`
 }
 
+type UserMessage struct {
+	ID          types.MessageID `json:"ID"`
+	DeviceId    string          `json:"deviceId"`
+	Message     *WAMessage      `json:"message"`
+	TheirJID    *types.JID      `json:"theirJID"`
+	FromMe      bool            `json:"fromMe"`
+	Timestamp   time.Time       `json:"timestamp"`
+	PushName    string          `json:"pushName"`
+	Type        string          `json:"type"`
+	ReceiptType string          `json:"receiptType"`
+}
+
 type Broadcast struct {
 	Id            int64         `json:"id"`
 	UserId        int           `json:"user_id"`
-	DeviceId      string        `json:"deviceId"`
+	Jid           types.JID     `json:"jid"`
 	Message       string        `json:"message" validate:"required,min=100"`
 	Media         *UploadedFile `json:"media"`
 	ContactType   string        `json:"contactType" validate:"required"`
@@ -84,6 +128,8 @@ type Broadcast struct {
 	UpdatedAt     *time.Time    `json:"updatedAt"`
 	CampaignName  string        `json:"campaignName" validate:"required"`
 	SentStartedAt *time.Time    `json:"sentStartedAt"`
+	Status        string        `json:"status"`
+	Device        *Device       `json:"device"`
 }
 
 type BroadcastRecipient struct {

@@ -68,8 +68,7 @@ func (ev *EchoValidator) Validate(i interface{}) error {
 			Message: errs.Translate(ev.Translator),
 		}
 
-		log.Printf("Response: %+v", x)
-		return echo.NewHTTPError(http.StatusBadRequest, x)
+		return echo.NewHTTPError(http.StatusUnprocessableEntity, x)
 	}
 
 	return nil
@@ -122,6 +121,11 @@ func main() {
 	}
 
 	r := store.NewRepo(dbConn)
+	err = r.Migrate()
+	if err != nil {
+		panic(err)
+	}
+
 	s := service.NewService(r, container)
 	a := action.NewAction(baseUrl, s)
 
